@@ -5,6 +5,7 @@ import { AI_PROFILES } from '../ai/AIController.js';
 import { CAR_TYPES, CAR_KEYS } from '../vehicle/CarTypes.js';
 import { SECONDARY } from '../combat/SecondaryWeapons.js';
 import { MAPS, MAP_KEYS } from '../world/maps/index.js';
+import { PRIMARY, PRIMARY_KEYS } from '../combat/PrimaryWeapons.js';
 
 const DIFF_KEYS = ['easy', 'normal', 'hard'];
 
@@ -23,7 +24,13 @@ const ICONS = {
   scatter: '<path d="M3 12l18-7M3 12h18M3 12l18 7"/>',
   laser: '<circle cx="6" cy="12" r="3" fill="currentColor"/><path d="M10 12h12"/><path d="M18 8l4 4-4 4"/>',
   hazard: '<path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v1"/>',
+  minigun: '<path d="M2 8h14M2 12h14M2 16h14"/><path d="M16 6v12" /><path d="M19 9l3 3-3 3"/>',
+  shotgun: '<path d="M3 9h7M3 15h7M3 12h7"/><path d="M13 12l8-6M13 12h9M13 12l8 6"/>',
+  sniper: '<circle cx="12" cy="12" r="6"/><path d="M12 2v5M12 17v5M2 12h5M17 12h5"/><circle cx="12" cy="12" r="1" fill="currentColor"/>',
+  breacher: '<circle cx="9" cy="12" r="5" fill="currentColor"/><path d="M14 12h8"/><path d="M17 8l4 4-4 4"/>',
+  flame: '<path d="M12 2c1 4 6 6 6 12a6 6 0 0 1-12 0c0-3 2-4 3-7 1 2 2 2 3 1z" fill="currentColor"/>',
 };
+ICONS.shell = ICONS.breacher;
 const icon = (name, cls = 'kf-icon') => `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ICONS.cannon}</svg>`;
 
 const ARC_R = 80;
@@ -134,6 +141,15 @@ export class HUD {
             </button>`).join('')}
         </div>
         <div class="car-detail" id="carDetail"></div>
+        <div class="section-label">PRIMARY WEAPON <span class="hint"><kbd>Z</kbd><kbd>X</kbd></span></div>
+        <div class="wp-row" id="wpRow">
+          ${PRIMARY_KEYS.map((k) => `
+            <button class="wp-card" data-key="${k}" style="--wc:${PRIMARY[k].color}">
+              ${icon(k === 'cannon' ? 'cannon' : k, 'wpc-icon')}
+              <div class="wpc-name">${PRIMARY[k].short}</div>
+            </button>`).join('')}
+        </div>
+        <div class="wp-blurb" id="wpBlurb"></div>
         <div class="section-label">SELECT ARENA <span class="hint"><kbd>Q</kbd><kbd>E</kbd></span></div>
         <div class="map-row" id="mapRow">
           ${MAP_KEYS.map((k) => {
@@ -162,7 +178,7 @@ export class HUD {
         </div>
         <div class="start-controls">
           <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>DRIVE</span></div>
-          <div><kbd class="wide">CLICK</kbd><span>AUTOCANNON</span></div>
+          <div><kbd class="wide">CLICK</kbd><span>FIRE PRIMARY</span></div>
           <div><kbd>E</kbd><span>SECONDARY</span></div>
           <div><kbd class="wide">SHIFT</kbd><span>NITRO</span></div>
           <div><kbd class="wide">SPACE</kbd><span>HANDBRAKE</span></div>
@@ -175,6 +191,12 @@ export class HUD {
     this.diffCards = [...this.start.querySelectorAll('.diff-card')];
     this.carCards = [...this.start.querySelectorAll('.car-card')];
     this.carDetail = this.start.querySelector('#carDetail');
+    this.wpCards = [...this.start.querySelectorAll('.wp-card')];
+    this.wpBlurb = this.start.querySelector('#wpBlurb');
+    this.wpIndex = 0;
+    this._onWp = null;
+    this.wpCards.forEach((card, i) => card.addEventListener('click', () => this.selectWeapon(i)));
+    this._renderWeapon();
     this.mapCards = [...this.start.querySelectorAll('.map-card')];
     this.mapBlurb = this.start.querySelector('#mapBlurb');
     this.diffIndex = 1;
@@ -227,6 +249,49 @@ export class HUD {
 
   stepCar(delta) {
     this.selectCar(this.carIndex + delta);
+  }
+
+  /** Register the menu weapon picker: `onSelect(weaponKey)` fires when the highlighted primary weapon changes. */
+  setWeaponChoices(currentKey, onSelect) {
+    this._onWp = onSelect;
+    this.wpIndex = Math.max(0, PRIMARY_KEYS.indexOf(currentKey));
+    this._renderWeapon();
+  }
+
+  selectWeapon(i) {
+    const next = (i + PRIMARY_KEYS.length) % PRIMARY_KEYS.length;
+    if (next === this.wpIndex) return;
+    this.onSfx?.('move');
+    this.wpIndex = next;
+    this._renderWeapon();
+    this._onWp?.(PRIMARY_KEYS[this.wpIndex]);
+  }
+
+  stepWeapon(delta) {
+    this.selectWeapon(this.wpIndex + delta);
+  }
+
+  _renderWeapon() {
+    this.wpCards.forEach((c, i) => c.classList.toggle('selected', i === this.wpIndex));
+    const d = PRIMARY[PRIMARY_KEYS[this.wpIndex]];
+    this.wpBlurb.innerHTML = `<b>${d.name}</b> · ${d.role} — ${d.desc}`;
+  }
+
+  /** In-match readout of the primary weapon: name, icon, reload / wind-up bar (0..1). */
+  setPrimaryBadge(key) {
+    const d = PRIMARY[key] ?? PRIMARY.cannon;
+    this.primaryBadge.style.setProperty('--wc', d.color);
+    this.primaryBadge.classList.toggle('bar', d.hud !== 'none');
+    this.primaryBadge.querySelector('.pb-name').textContent = d.name;
+    this.primaryBadge.querySelector('.pb-icon').innerHTML = icon(key, 'pb-svg');
+    this._pbKind = d.hud;
+  }
+
+  setPrimaryFrac(f) {
+    if (this._pbLast === f) return;
+    this._pbLast = f;
+    this.pbFill.style.transform = `scaleX(${f})`;
+    this.primaryBadge.classList.toggle('ready', f >= 0.999);
   }
 
   /** Register the menu arena picker: `onSelect(mapId)` fires when the highlighted arena changes. */
@@ -358,6 +423,10 @@ export class HUD {
         </div>
         <kbd>E</kbd>
       </div>
+      <div class="primary-badge" id="primaryBadge">
+        <span class="pb-icon"></span>
+        <div class="pb-body"><div class="pb-name">AUTOCANNON</div><div class="pb-bar"><i id="pbFill"></i></div></div>
+      </div>
       <div class="kill-feed" id="killFeed"></div>
       <div class="pickup-toast" id="pickupToast"><span id="pickupToastText"></span></div>
       <div class="controls-card" id="helpCard">
@@ -366,7 +435,7 @@ export class HUD {
         <div class="cc-row"><span class="keys"><kbd>S</kbd><kbd>↓</kbd></span><span>BRAKE / REVERSE</span></div>
         <div class="cc-row"><span class="keys"><kbd>A</kbd><kbd>D</kbd></span><span>STEER · AIR YAW</span></div>
         <div class="cc-row"><span class="keys"><kbd class="wide">SPACE</kbd></span><span>HANDBRAKE / DRIFT</span></div>
-        <div class="cc-row"><span class="keys"><kbd class="wide">CLICK</kbd></span><span>AUTOCANNON</span></div>
+        <div class="cc-row"><span class="keys"><kbd class="wide">CLICK</kbd></span><span>FIRE PRIMARY</span></div>
         <div class="cc-row"><span class="keys"><kbd>E</kbd><kbd>R-CLICK</kbd></span><span>SECONDARY</span></div>
         <div class="cc-row"><span class="keys"><kbd class="wide">SHIFT</kbd></span><span>NITRO BOOST</span></div>
         <div class="cc-row"><span class="keys"><kbd>C</kbd></span><span>LOOK BACK</span></div>
@@ -382,6 +451,8 @@ export class HUD {
       <div class="overcharge-badge hidden" id="overchargeBadge">OVERCHARGE <span id="overchargeNum">0.0</span>s</div>
     `;
     this.root.appendChild(this.hud);
+    this.primaryBadge = this.hud.querySelector('#primaryBadge');
+    this.pbFill = this.hud.querySelector('#pbFill');
     this.spdArc = this.hud.querySelector('#spdArc');
     this.rpmArc = this.hud.querySelector('#rpmArc');
     this.spdNum = this.hud.querySelector('#spdNum');

@@ -45,6 +45,7 @@ export class ChaseCamera {
     this.trauma = 0;
     this.time = 0;
     this.fov = this.settings.fov;
+    this.fovScale = 1; // <1 zooms in (rail sniper)
     this.armLength = null;
   }
 
@@ -194,7 +195,7 @@ export class ChaseCamera {
     cam.lookAt(this.look.x + _shake.x * 0.5, this.look.y + _shake.y * 0.5, this.look.z);
 
     // Speed FOV kick
-    const targetFov = s.fov + (s.fovFast - s.fov) * speedT * speedT;
+    const targetFov = (s.fov + (s.fovFast - s.fov) * speedT * speedT) * this.fovScale;
     this.fov += (targetFov - this.fov) * (instant ? 1 : damp(4, dt));
     if (Math.abs(cam.fov - this.fov) > 0.01) {
       cam.fov = this.fov;

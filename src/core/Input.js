@@ -44,8 +44,8 @@ export class Input {
   poll() {
     const pad = this._pad();
     if (!pad) return;
-    // Y = recover, Start = confirm, Back = tuning, B = back (menus), D-pad L/R = vehicle, LB/RB = arena
-    const map = { 3: 'KeyR', 9: 'Enter', 8: 'Backquote', 1: 'Escape', 14: 'ArrowLeft', 15: 'ArrowRight', 4: 'BracketLeft', 5: 'BracketRight' };
+    // Y = recover, Start = confirm, Back = tuning, B = back (menus), D-pad L/R = vehicle, LB/RB = arena, X = weapon
+    const map = { 3: 'KeyR', 9: 'Enter', 8: 'Backquote', 1: 'Escape', 14: 'ArrowLeft', 15: 'ArrowRight', 4: 'BracketLeft', 5: 'BracketRight', 2: 'KeyX' };
     for (const [idx, code] of Object.entries(map)) {
       const down = pad.buttons[idx]?.pressed;
       if (down && !this.padPrev[idx]) {

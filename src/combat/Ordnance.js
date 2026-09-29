@@ -200,8 +200,7 @@ export class Ordnance {
   }
 
   /** Hitscan beam. Returns nothing; damage is applied by the onLaserHit callback. */
-  fireLaser(owner, origin, dir, color = null) {
-    const range = SEC.laserRange;
+  fireLaser(owner, origin, dir, color = null, { range = SEC.laserRange, time = SEC.laserBeamTime, damage = SEC.laserDamage, width = 1, cause = 'laser' } = {}) {
     const hit = this.physics.castRay(origin, dir, range, owner.body, 1);
     const dist = hit ? hit.distance : range;
     const b = this.beams[this.beamCursor];
@@ -210,14 +209,15 @@ export class Ordnance {
     _t.copy(origin).add(_seg.copy(dir).multiplyScalar(dist));
     b.g.lookAt(_t);
     b.length = dist;
-    b.life = b.maxLife = SEC.laserBeamTime;
+    b.life = b.maxLife = time;
+    b.width = width;
     b.g.visible = true;
     if (color) b.halo.material.color.setRGB(color[0], color[1], color[2]);
     if (hit) {
       _n.set(hit.normal.x, hit.normal.y, hit.normal.z);
-      this.onLaserHit?.(_t.clone(), _n.clone(), this.physics.getEntity(hit.collider), owner);
+      this.onLaserHit?.(_t.clone(), _n.clone(), this.physics.getEntity(hit.collider), owner, damage, cause, width);
     } else {
-      this.onLaserHit?.(_t.clone(), null, null, owner);
+      this.onLaserHit?.(_t.clone(), null, null, owner, damage, cause, width);
     }
   }
 
@@ -346,7 +346,7 @@ export class Ordnance {
       b.life -= dt;
       const t = Math.max(0, b.life / b.maxLife);
       b.g.visible = b.life > 0;
-      const w = 0.03 + 0.05 * t;
+      const w = (0.03 + 0.05 * t) * (b.width ?? 1);
       b.core.scale.set(w, w, b.length);
       b.halo.scale.set(w * 4.5, w * 4.5, b.length);
       b.halo.material.opacity = 0.6 * t;

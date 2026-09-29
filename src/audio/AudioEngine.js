@@ -383,7 +383,7 @@ export class AudioEngine {
   }
 
   /** Cannon shot: a short kinetic "crack" (filtered noise) plus a fast descending tone for punch. */
-  fire(volume = 1) {
+  fire(volume = 1, pitch = 1) {
     if (!this.enabled || volume < 0.02) return;
     const ctx = this.ctx;
     const t = ctx.currentTime;
@@ -406,8 +406,8 @@ export class AudioEngine {
 
     const o = ctx.createOscillator();
     o.type = 'sawtooth';
-    o.frequency.setValueAtTime(1400, t);
-    o.frequency.exponentialRampToValueAtTime(220, t + 0.07);
+    o.frequency.setValueAtTime(1400 * pitch, t);
+    o.frequency.exponentialRampToValueAtTime(220 * pitch, t + 0.07);
     const og = ctx.createGain();
     og.gain.setValueAtTime(0.0001, t);
     og.gain.exponentialRampToValueAtTime(0.22 * volume + 0.0002, t + 0.003);
@@ -506,6 +506,41 @@ export class AudioEngine {
     this._tone(990, 0.12, { type: 'triangle', vol: 0.12 });
     this._tone(1480, 0.22, { type: 'triangle', vol: 0.12, delay: 0.08 });
     this._tone(1980, 0.28, { type: 'sine', vol: 0.06, delay: 0.08 });
+  }
+
+  /** Scattergun: a fat low thump, wide noise blast and a pump-action clack. */
+  shotgun(volume = 1) {
+    if (!this.enabled || volume < 0.02) return;
+    this._noiseBurst({ freq: 2600, q: 0.5, dur: 0.3, vol: 0.62 * volume, type: 'lowpass', sweepTo: 280 });
+    this._tone(105, 0.3, { type: 'sine', vol: 0.6 * volume, slideTo: 34 });
+    this._noiseBurst({ freq: 800, q: 1.2, dur: 0.5, vol: 0.16 * volume, delay: 0.05 });
+    this._tone(310, 0.05, { type: 'square', vol: 0.05 * volume, delay: 0.38 });
+    this._tone(210, 0.06, { type: 'square', vol: 0.05 * volume, delay: 0.46 });
+  }
+
+  /** Rail sniper: a supersonic crack with a falling electrical zap and a ringing tail. */
+  rail(volume = 1) {
+    if (!this.enabled || volume < 0.02) return;
+    this._noiseBurst({ freq: 6000, q: 0.6, dur: 0.12, vol: 0.4 * volume, type: 'highpass' });
+    this._tone(3200, 0.36, { type: 'sawtooth', vol: 0.12 * volume, slideTo: 200 });
+    this._tone(1700, 0.5, { type: 'sine', vol: 0.08 * volume, slideTo: 900, delay: 0.02 });
+    this._tone(80, 0.3, { type: 'sine', vol: 0.4 * volume, slideTo: 40 });
+  }
+
+  /** Breacher shell launch: a very deep cannon boom with a smoky tail. */
+  breacher(volume = 1) {
+    if (!this.enabled || volume < 0.02) return;
+    this._tone(72, 0.7, { type: 'sine', vol: 0.75 * volume, slideTo: 24 });
+    this._noiseBurst({ freq: 1800, q: 0.5, dur: 0.6, vol: 0.55 * volume, type: 'lowpass', sweepTo: 180 });
+    this._tone(220, 0.25, { type: 'sawtooth', vol: 0.12 * volume, slideTo: 60 });
+    this._noiseBurst({ freq: 500, q: 0.8, dur: 0.9, vol: 0.14 * volume, type: 'lowpass', sweepTo: 120, delay: 0.1 });
+  }
+
+  /** Flamethrower: a short roaring hiss (called every few shots while the trigger is held). */
+  flame(volume = 1) {
+    if (!this.enabled || volume < 0.02) return;
+    this._noiseBurst({ freq: 900, q: 0.7, dur: 0.22, vol: 0.2 * volume, sweepTo: 420 });
+    this._noiseBurst({ freq: 240, q: 0.6, dur: 0.24, vol: 0.16 * volume, type: 'lowpass' });
   }
 
   /** Match countdown: short beeps for 3-2-1, a bright two-tone chord for GO. */

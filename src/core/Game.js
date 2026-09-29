@@ -18,6 +18,7 @@ import { AIController, AIDebugView, AI_PROFILES, buildAIProfile } from '../ai/AI
 import { Nameplate } from '../ui/Nameplate.js';
 import { Pickup, PICKUP_TYPES, isSecondaryKind } from '../world/Pickup.js';
 import { Ordnance } from '../combat/Ordnance.js';
+import { PRIMARY, BOT_LOADOUTS } from '../combat/PrimaryWeapons.js';
 import { SECONDARY, SEC } from '../combat/SecondaryWeapons.js';
 import { CAR_TYPES, applyCarStats } from '../vehicle/CarTypes.js';
 
@@ -108,7 +109,7 @@ export class Game {
     const mk = (v, model, isPlayer, name, key) => ({
       v, model, isPlayer, name, key, score: 0, respawnTimer: 0, smokeAcc: [0, 0, 0, 0], dmgSmokeAcc: 0,
       boostPadCooldown: 0, inHazard: false, hazardFxAcc: 0, boostSmokeAcc: 0, target: null, targetTimer: 0,
-      secondary: null, secondaryCooldown: 0, sparkAcc: 0, zones: new Set(),
+      secondary: null, secondaryCooldown: 0, sparkAcc: 0, zones: new Set(), burn: 0, burnAcc: 0, burnSource: null, flameAcc: 0,
     });
     this.p = mk(player, playerModel, true, 'YOU', 'p');
 
@@ -133,17 +134,19 @@ export class Game {
     this._byVehicle = new Map(this.combatants.map((c) => [c.v, c]));
     for (const c of this.combatants) {
       c.weapon = new Weapon(c.v, this.projectiles, {
-        onFire: (pos, dir) => this._onWeaponFire(c, pos, dir),
+        onFire: (pos, dir, kind) => this._onWeaponFire(c, pos, dir, kind),
+        onBeam: (pos, dir, def, damage) => this._firePrimaryBeam(c, pos, dir, def, damage),
         getTargets: () => this._aliveOthers(c).map((o) => o.v),
         aimAssist: c.isPlayer ? 0.045 : 0,
       });
       c.v.health.onDamage = (amount, point, normal, source, cause) => this._onDamage(c, amount, source, cause);
       c.v.health.onDeath = (point, normal, source, cause) => this._onDeath(c, source, cause);
     }
+    for (const c of this.combatants) this.setPrimary(c, 'cannon');
     this.ordnance = new Ordnance(this.scene, this.physics, this.fx, {
       getVehicles: () => this.combatants.map((c) => c.v),
       onDetonate: (ev) => this._onDetonate(ev),
-      onLaserHit: (point, normal, entity, owner) => this._onLaserHit(point, normal, entity, owner),
+      onLaserHit: (point, normal, entity, owner, damage, cause, width) => this._onLaserHit(point, normal, entity, owner, damage, cause, width),
       onMineArm: (mine) => {
         const owner = this._byVehicle.get(mine.owner);
         this.audio.mineArm(owner?.isPlayer ? 1 : this._attenuation(mine.pos));
@@ -158,6 +161,8 @@ export class Game {
     this.hud.onPauseAction = (action) => (action === 'resume' ? this._setPaused(false) : this._quitToMenu());
     this.hud.setCarChoices(this.playerCar, (key) => this.selectPlayerCar(key));
     this.hud.setMapChoices(this.mapId, (id) => this.selectMap(id));
+    this.hud.setWeaponChoices(this.p.primary ?? 'cannon', (key) => this.selectPlayerWeapon(key));
+    this.projectiles.trail = (p, dt) => this._projectileTrail(p, dt);
 
     this.tuning = new TuningPanel(this);
     this.physics.onImpact((ev) => this._onImpact(ev));
@@ -277,6 +282,22 @@ export class Game {
     c.model.dispose();
     c.model = new VehicleModel(c.v.cfg, { type: key, accent: PLAYER_COLOR, number: '07' });
     this.scene.add(c.model.root);
+    c.model.setPrimary(c.primary ?? 'cannon');
+  }
+
+  /** Equip a primary weapon: gun logic, roof-station model and (for bots) the AI's engagement profile. */
+  setPrimary(c, key) {
+    c.primary = PRIMARY[key] ? key : 'cannon';
+    c.weapon.setType(c.primary);
+    c.model.setPrimary(c.primary);
+    if (!c.isPlayer) c.ai.setProfile(buildAIProfile(this.difficulty, c.roster.archetype, c.primary));
+    else this.hud.setPrimaryBadge(c.primary);
+  }
+
+  /** Menu weapon picker. */
+  selectPlayerWeapon(key) {
+    if (!PRIMARY[key]) return;
+    this.setPrimary(this.p, key);
   }
 
   _sfx(name) {
@@ -308,7 +329,10 @@ export class Game {
   startMatch(difficulty = this.difficulty) {
     this.difficulty = difficulty;
     for (const c of this.bots) {
-      c.ai.setProfile(buildAIProfile(difficulty, c.roster.archetype));
+      // each bot rolls a primary weapon that suits its fighting style (fresh every match)
+      const pool = BOT_LOADOUTS[c.roster.archetype] ?? BOT_LOADOUTS.balanced;
+      this.setPrimary(c, pool[Math.floor(Math.random() * pool.length)]);
+      c.ai.setProfile(buildAIProfile(difficulty, c.roster.archetype, c.primary));
       c.ai.reset();
       c.target = null;
       c.targetTimer = 0;
@@ -372,6 +396,8 @@ export class Game {
     c.v.boosting = false;
     c.inHazard = false;
     c.zones.clear();
+    c.burn = 0;
+    c.burnSource = null;
     c.boostPadCooldown = 0;
     c.hazardFxAcc = 0;
     c.boostSmokeAcc = 0;
@@ -505,6 +531,7 @@ export class Game {
       c.model.root.visible = !(h.invuln > 0 && !h.dead) || Math.floor(this.time * 14) % 2 === 0;
       c.model.setDamage(h.dead ? 0 : h.pct, this.time);
       c.model.setLoadout(c.secondary && c.secondary.ammo > 0 ? c.secondary.type : null);
+      c.model.spinRate = c.primary === 'minigun' ? c.weapon.spin : 0;
       if (!c.isPlayer) {
         c.nameplate.update(realDt, _pos, this.camera, h, this.state !== 'menu');
         c.debug.update(c.ai);
@@ -529,6 +556,8 @@ export class Game {
       this.arena.followShadow(_pos);
       for (const c of this.combatants) this._combatantFx(c, dt);
       this.hud.update(this.p.v, dt, this.p.secondary);
+      this.hud.setPrimaryFrac(this.p.weapon.hudFrac);
+      this.chase.fovScale = playerDown ? 1 : (PRIMARY[this.p.primary]?.zoom ?? 1);
       this.hud.setScore(this.combatants.map((c) => ({ key: c.key, score: c.score })));
       this.hud.setMatchTime(this.stats.time);
       this._updateThreatIndicators(alpha);
@@ -673,6 +702,11 @@ export class Game {
         }
       }
       c.v.hazardTraction = traction;
+      if (c.burn > 0) {
+        c.burn -= FIXED_DT;
+        if (active && !c.v.health.dead) c.v.health.takeDamage(PRIMARY.flame.burnDps * FIXED_DT, c.v.currPos, UP_VEC, c.burnSource, this.time, 'flame');
+        if (c.v.health.dead) c.burn = 0;
+      }
       if (dmg > 0) {
         c.v.health.takeDamage(c.v.cfg.hazardDamagePerSecond * dmg * FIXED_DT, c.v.currPos, { x: 0, y: 1, z: 0 }, null, this.time, 'hazard');
       }
@@ -737,6 +771,8 @@ export class Game {
       if (i.wasPressed('ArrowRight') || i.wasPressed('KeyD')) this.hud.stepCar(1);
       if (i.wasPressed('ArrowUp') || i.wasPressed('KeyW')) this.hud.stepDifficulty(-1);
       if (i.wasPressed('ArrowDown') || i.wasPressed('KeyS')) this.hud.stepDifficulty(1);
+      if (i.wasPressed('KeyZ')) this.hud.stepWeapon(-1);
+      if (i.wasPressed('KeyX')) this.hud.stepWeapon(1);
       if (i.wasPressed('KeyQ') || i.wasPressed('BracketLeft')) this.hud.stepMap(-1);
       if (i.wasPressed('KeyE') || i.wasPressed('BracketRight')) this.hud.stepMap(1);
       if (i.wasPressed('Enter') || i.wasPressed('NumpadEnter')) this.hud.pressStart();
@@ -905,6 +941,20 @@ export class Game {
       v.recovered = false;
       this._spawnFx(c, v.currPos);
       if (c.isPlayer) this.renderer.flash = Math.max(this.renderer.flash, 0.35);
+    }
+
+    // Set alight by a flamethrower: flames licking off the body, black smoke
+    if (c.burn > 0 && !v.health.dead) {
+      c.burnAcc += 55 * dt;
+      while (c.burnAcc >= 1) {
+        c.burnAcc -= 1;
+        _p.set((Math.random() - 0.5) * 1.6, 0.35 + Math.random() * 0.5, (Math.random() - 0.5) * 3.2).applyQuaternion(v.currQuat).add(v.currPos);
+        _v.set((Math.random() - 0.5) * 0.8, 1.6 + Math.random() * 1.4, (Math.random() - 0.5) * 0.8);
+        this.fx.fire.emit(_p, _v, { size: 0.5 + Math.random() * 0.5, grow: 1.0, life: 0.35 + Math.random() * 0.25, heat: 0.95 });
+        if (Math.random() < 0.3) this.fx.smoke.emit(_p, _v.set(0, 2.2, 0), { color: [0.06, 0.055, 0.055], size: 0.7, grow: 3, life: 1.3, alpha: 0.45 });
+      }
+    } else {
+      c.burnAcc = 0;
     }
 
     // Burning wreck: flames from the engine bay / cabin while it waits to respawn (dies down over the delay).
@@ -1085,10 +1135,11 @@ export class Game {
   }
 
   /** Splash detonation (missile impact / mine trigger): falloff damage + knockback to every non-owner vehicle in range. */
-  _onDetonate({ kind, pos, radius, damage, knock, lift, owner }) {
+  _onDetonate({ kind, pos, radius, damage, knock, lift, owner, damageFn = null }) {
     const ownerC = this._byVehicle.get(owner);
     const scale = radius / 5;
     this.fx.explosion(pos, { color: kind === 'mine' ? '#ff9a4a' : '#ffb060', scale: 0.85 * scale + 0.35 });
+    if (kind === 'shell') this.fx.flashes.spawn(pos, '#ffd9a0', 12, 0.25);
     this.fx.shockwaves.spawn(pos, '#ffd6a0', radius * 1.1, 0.5);
     const dP = this.p.v.currPos.distanceTo(pos);
     const near = Math.max(0, 1 - dP / (radius * 5 + 25));
@@ -1104,7 +1155,7 @@ export class Game {
       const d = _v.length();
       if (d > radius) continue;
       const f = 1 - d / radius;
-      const dmg = damage * (0.35 + 0.65 * f);
+      const dmg = damageFn ? damageFn(t, d) : damage * (0.35 + 0.65 * f);
       _v.y = 0;
       if (_v.lengthSq() < 1e-4) _v.set(Math.random() - 0.5, 0, Math.random() - 0.5);
       _v.normalize();
@@ -1121,16 +1172,57 @@ export class Game {
     }
   }
 
-  _onLaserHit(point, normal, entity, owner) {
-    this.fx.flashes.spawn(point, '#bfe8ff', 3, 0.16);
+  _onLaserHit(point, normal, entity, owner, damage = SEC.laserDamage, cause = 'laser', width = 1) {
+    this.fx.flashes.spawn(point, '#bfe8ff', 3 * (0.6 + width * 0.4), 0.16);
     if (normal) this.fx.sparks.burst(point, normal, 22, { speed: 11, spread: 0.7, life: 0.35, up: 0.2, color: [1.5, 3, 4.5] });
     if (!entity?.health || entity === owner || this.state !== 'playing') return;
     // (Deliberately not using the shared scratch vectors: this runs mid-_fireSecondary, which still needs them.)
-    const applied = entity.health.takeDamage(SEC.laserDamage, point, normal ?? UP_VEC, owner, this.time, 'laser');
+    const applied = entity.health.takeDamage(damage, point, normal ?? UP_VEC, owner, this.time, cause);
     if (applied && owner === this.p.v) {
       this.stats.hits++;
       this.hud.hitMarker(entity.health.dead);
       this.audio.blip(entity.health.dead ? 1900 : 1500, 0.05, 0.1);
+    }
+  }
+
+  /**
+   * BREACHER shell impact. A direct hit (within a few metres of a hull) either wrecks a light car outright or leaves
+   * a heavy one on a sliver of health (so the follow-up ram finishes it); the blast beyond that is ordinary falloff.
+   */
+  _onShellHit(point, normal, entity, projectile) {
+    const def = PRIMARY.breacher;
+    const owner = projectile.owner;
+    const at = point.clone();
+    if (normal) at.addScaledVector(normal, 0.4);
+    this._onDetonate({
+      kind: 'shell', pos: at, radius: def.radius, damage: 0, knock: def.knock, lift: def.lift, owner,
+      damageFn: (t, d) => {
+        const h = t.v.health;
+        if (d <= def.direct) {
+          if (h.max <= def.killBelow || h.current <= def.finish) return h.current + 1; // light car, or already weak: wrecked
+          const left = def.lowLeft[0] + Math.random() * (def.lowLeft[1] - def.lowLeft[0]);
+          return Math.max(1, h.current - left);
+        }
+        return def.splash * Math.max(0, 1 - (d - def.direct) / (def.radius - def.direct)) + 15;
+      },
+    });
+  }
+
+  /** Flame stream contact: small damage, sets vehicles ablaze (damage over time), licks of fire on the surface. */
+  _onFlameHit(point, normal, entity, projectile) {
+    _v.set(0, 0.6, 0);
+    this.fx.fire.emit(point, _v, { size: 0.9, grow: 1.6, life: 0.35, heat: 1 });
+    if (!entity?.health || entity === projectile.owner || this.state !== 'playing') return;
+    const t = this._byVehicle.get(entity);
+    const applied = entity.health.takeDamage(projectile.damage, point, normal ?? UP_VEC, projectile.owner, this.time, 'flame');
+    if (!applied) return;
+    if (t && !t.v.health.dead) {
+      t.burn = PRIMARY.flame.burn;
+      t.burnSource = projectile.owner;
+    }
+    if (projectile.owner === this.p.v) {
+      this.stats.hits++;
+      this.hud.hitMarker(entity.health.dead);
     }
   }
 
@@ -1271,20 +1363,69 @@ export class Game {
     if (killer && killer.score >= KILLS_TO_WIN) this._endMatch(killer);
   }
 
-  _onWeaponFire(c, pos, dir) {
-    c.model.flashMuzzle();
-    this.fx.flashes.spawn(pos, '#ffcf8a', 1.4, 0.07);
-    this.fx.sparks.burst(pos, dir, 4, { speed: 4, spread: 0.15, life: 0.12, up: 0, color: [4, 2.6, 1] });
-    if (c.isPlayer) {
-      this.audio.fire(1);
-      this.hud.crosshairPulse();
-      this.stats.shots++;
+  _onWeaponFire(c, pos, dir, kind = 'bolt') {
+    const vol = c.isPlayer ? 1 : this._attenuation(pos);
+    c.model.flashMuzzle(kind);
+    if (kind === 'flame') {
+      // stream of fire out of the nozzle (the projectile itself is invisible)
+      this.fx.fireBurst(pos, 3, { speed: 6, size: 0.6, life: 0.3, up: 0.05, vel: dir });
+      c.flameAcc = (c.flameAcc + 1) % 4;
+      if (c.flameAcc === 0) this.audio.flame(vol);
+    } else if (kind === 'shell') {
+      this.fx.flashes.spawn(pos, '#ffb070', 4.5, 0.16);
+      this.fx.fireBurst(pos, 10, { speed: 9, size: 0.9, life: 0.4, up: 0.05, vel: dir });
+      this.fx.sparks.burst(pos, dir, 16, { speed: 12, spread: 0.3, life: 0.3, up: 0, color: [4, 2.2, 0.8] });
+      this.audio.breacher(vol);
+    } else if (kind === 'pellet') {
+      this.fx.flashes.spawn(pos, '#ffc27a', 3, 0.1);
+      this.fx.sparks.burst(pos, dir, 12, { speed: 10, spread: 0.4, life: 0.2, up: 0, color: [4, 2.4, 0.9] });
+      this.audio.shotgun(vol);
+    } else if (kind === 'spin') {
+      this.fx.flashes.spawn(pos, '#ffcf8a', 1.1, 0.05);
+      this.audio.fire(vol * 0.5, 0.75 + c.weapon.spin * 0.5);
+    } else if (kind === 'beam') {
+      this.fx.flashes.spawn(pos, '#bfe8ff', 3, 0.12);
+      this.audio.rail(vol);
     } else {
-      this.audio.fire(this._attenuation(pos) * 0.8);
+      this.fx.flashes.spawn(pos, '#ffcf8a', 1.4, 0.07);
+      this.fx.sparks.burst(pos, dir, 4, { speed: 4, spread: 0.15, life: 0.12, up: 0, color: [4, 2.6, 1] });
+      this.audio.fire(c.isPlayer ? 1 : vol * 0.8);
+    }
+    if (c.isPlayer) {
+      this.hud.crosshairPulse();
+      this.stats.shots += kind === 'pellet' ? 1 : 1;
+      if (kind === 'shell') this.chase.addTrauma(0.5);
+      else if (kind === 'pellet') this.chase.addTrauma(0.3);
+      else if (kind === 'beam') this.chase.addTrauma(0.22);
+    }
+  }
+
+  /** Rail sniper: instant hitscan beam from the muzzle (visual + damage via the shared beam pool). */
+  _firePrimaryBeam(c, pos, dir, def, damage) {
+    this.ordnance.fireLaser(c.v, pos, dir, c.isPlayer ? [0.45, 1.5, 3.4] : [3.4, 0.7, 0.45], {
+      range: def.range, time: def.beamTime, damage, width: 0.6, cause: 'sniper',
+    });
+  }
+
+  /** Per-fixed-step visuals for special projectiles: the shell's smoke trail and the flamethrower's fire stream. */
+  _projectileTrail(p, dt) {
+    if (p.kind === 'shell') {
+      _v.set((Math.random() - 0.5) * 0.6, 0.3 + Math.random() * 0.4, (Math.random() - 0.5) * 0.6);
+      this.fx.smoke.emit(p.currPos, _v, { color: [0.5, 0.46, 0.42], size: 0.5, grow: 2.2, life: 0.9, alpha: 0.35 });
+      if (Math.random() < 0.6) this.fx.fire.emit(p.currPos, _v.set(0, 0.2, 0), { size: 0.5, grow: 0.5, life: 0.18, heat: 1 });
+    } else {
+      p._t = (p._t ?? 0) + 1;
+      if (p._t % 2 === 0) {
+        const age = 1 - p.life / p.maxLife;
+        _v.set((Math.random() - 0.5) * 1.6, 0.4 + Math.random() * 1.2, (Math.random() - 0.5) * 1.6);
+        this.fx.fire.emit(p.currPos, _v, { size: 0.5 + age * 0.9, grow: 1.6 + age * 1.6, life: 0.3 + Math.random() * 0.2, heat: 1 - age * 0.5 });
+      }
     }
   }
 
   _onProjectileHit(point, normal, entity, projectile) {
+    if (projectile.kind === 'shell') { this._onShellHit(point, normal, entity, projectile); return; }
+    if (projectile.kind === 'flame') { this._onFlameHit(point, normal, entity, projectile); return; }
     const isWeaponHit = entity && entity.health && entity !== projectile.owner;
     this.fx.sparks.burst(point, normal, isWeaponHit ? 14 : 8, {
       speed: 8, spread: 0.7, life: 0.3, up: 0.2, color: [4, 2.6, 1],

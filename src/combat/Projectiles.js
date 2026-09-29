@@ -4,7 +4,7 @@ import * as THREE from 'three';
 // Rapier world each fixed step (no dynamic rigid bodies — far cheaper for fast, short-lived bolts, and avoids
 // them nudging things on contact). Rendered as a single InstancedMesh (one draw call for the whole pool).
 
-const POOL_SIZE = 96; // headroom for up to 4 simultaneous shooters (Phase 5 FFA)
+const POOL_SIZE = 160; // headroom for 4 simultaneous shooters incl. chain guns / scatterguns / flamethrowers
 const BOLT_LENGTH = 2.0;
 const BOLT_RADIUS = 0.06;
 
@@ -62,6 +62,7 @@ export class Projectiles {
     scene.add(this.core);
 
     this.cursor = 0;
+    this.trail = null; // (projectile, dt) => void — optional per-step hook (shell smoke, flame particles)
   }
 
   spawn(origin, dir, ownerBody, owner, { damage, speed, life, kind = 'cannon', color = null }) {
@@ -114,6 +115,7 @@ export class Projectiles {
         continue;
       }
       p.currPos.add(_seg);
+      if (this.trail && (p.kind === 'shell' || p.kind === 'flame')) this.trail(p, dt);
     }
   }
 
@@ -132,7 +134,11 @@ export class Projectiles {
       _iquat.setFromUnitVectors(_unitY, _dir);
       // Fade the tail length in/out over the first/last instants of life so bolts don't pop.
       const lenT = Math.min(1, (p.maxLife - p.life) * 40);
-      _iscale.set(1, BOLT_LENGTH * lenT, 1);
+      if (p.kind === 'flame') _iscale.set(0, 0, 0); // drawn as fire particles instead
+      else if (p.kind === 'shell') _iscale.set(3.6, 1.1 * lenT, 3.6);
+      else if (p.kind === 'shotgun') _iscale.set(0.8, BOLT_LENGTH * 0.55 * lenT, 0.8);
+      else if (p.kind === 'minigun') _iscale.set(0.85, BOLT_LENGTH * 0.8 * lenT, 0.85);
+      else _iscale.set(1, BOLT_LENGTH * lenT, 1);
       _mat.compose(_ipos, _iquat, _iscale);
       this.mesh.setMatrixAt(i, _mat);
       this.core.setMatrixAt(i, _mat);

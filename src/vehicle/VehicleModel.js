@@ -390,7 +390,12 @@ export class VehicleModel {
     this.turret = station.root;
     this.swivel = station.swivel;
     this.recoil = station.recoil;
+    this.variants = station.variants;
+    this.muzzleGroup = station.muzzle;
+    this._spinAngle = 0;
+    this.spinRate = 0;
     this._recoilKick = 0;
+    this._kickScale = 1;
     const swivel = station.swivel;
     // Muzzle flash (additive sprite — no dynamic light so 4 cars don't burn shader cost)
     this.muzzleFlash = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -464,7 +469,10 @@ export class VehicleModel {
     mergeStatic(this.aero);
     mergeStatic(station.root, new Set([station.swivel]));
     mergeStatic(station.swivel, new Set([station.recoil, ...loadoutGroups]));
-    mergeStatic(station.recoil, new Set([station.muzzle]));
+    const variantGroups = ['cannon', 'minigun', 'shotgun', 'sniper', 'breacher', 'flame'].map((k) => station.variants[k]);
+    mergeStatic(station.recoil, new Set([station.muzzle, ...variantGroups]));
+    for (const g of variantGroups) mergeStatic(g, new Set([station.variants.minigunSpinner]));
+    mergeStatic(station.variants.minigunSpinner);
     for (const g of loadoutGroups) mergeStatic(g);
     for (const w of this.wheelGroups) {
       mergeStatic(w.spin);
@@ -589,7 +597,11 @@ export class VehicleModel {
 
     // Cannon recoil: sharp kick back, spring return
     this._recoilKick = Math.max(0, this._recoilKick - dt * 0.9);
-    this.recoil.position.z = this._recoilKick;
+    this.recoil.position.z = this._recoilKick * this._kickScale;
+    if (this.spinRate > 0.02 || this._spinAngle % (Math.PI / 3) > 0.01) {
+      this._spinAngle += dt * (this.spinRate * 42);
+      this.variants.minigunSpinner.rotation.z = this._spinAngle;
+    }
 
     if (this._muzzleFlashDecay > 0) {
       this._muzzleFlashDecay = Math.max(0, this._muzzleFlashDecay - dt);
@@ -686,9 +698,24 @@ export class VehicleModel {
   }
 
   /** Call once when the weapon fires — briefly lights the muzzle. */
-  flashMuzzle() {
-    this._muzzleFlashDecay = 0.06;
-    this._recoilKick = 0.06;
+  flashMuzzle(kind = 'bolt') {
+    if (kind === 'flame') return; // the stream itself is the effect
+    this._muzzleFlashDecay = kind === 'shell' ? 0.12 : kind === 'pellet' ? 0.09 : 0.06;
+    this._recoilKick = kind === 'shell' ? 0.2 : kind === 'pellet' ? 0.11 : kind === 'beam' ? 0.13 : kind === 'spin' ? 0.02 : 0.06;
+  }
+
+  /** Show the barrel assembly for a primary weapon and re-seat the muzzle flash. */
+  setPrimary(key) {
+    if (this._primary === key) return;
+    this._primary = key;
+    const all = ['cannon', 'minigun', 'shotgun', 'sniper', 'breacher', 'flame'];
+    for (const k of all) this.variants[k].visible = false;
+    (this.variants[key] ?? this.variants.cannon).visible = true;
+    const tip = { cannon: -1.14, minigun: -1.23, shotgun: -1.1, sniper: -1.36, breacher: -1.14, flame: -1.16 }[key] ?? -1.14;
+    this.muzzleGroup.position.z = tip;
+    const col = { sniper: [0.45, 0.85, 1.0], flame: [1.0, 0.5, 0.18], breacher: [1.0, 0.62, 0.3] }[key] ?? [1, 0.72, 0.35];
+    this.muzzleFlash.material.color.setRGB(col[0] * 3.5, col[1] * 3.5, col[2] * 3.5);
+    this._kickScale = key === 'minigun' ? 0.5 : 1;
   }
 
   dispose() {

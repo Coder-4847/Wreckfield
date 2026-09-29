@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { PRIMARY } from '../combat/PrimaryWeapons.js';
 
 // AI driver for a Vehicle. Produces the same control shape the player's Input does
 // ({throttle, brake, steer, handbrake, fire}), so the AI drives the exact same physics car.
@@ -65,19 +66,29 @@ export const AI_ARCHETYPES = {
   },
 };
 
-/** Merge a difficulty tier's numeric profile with an archetype's behavioral deltas. */
-export function buildAIProfile(difficultyKey, archetypeKey) {
+/**
+ * Merge a difficulty tier's numeric profile with an archetype's behavioral deltas and the equipped primary weapon's
+ * engagement profile (fire range, preferred distance, aim cone, burst length, projectile speed for lead).
+ */
+export function buildAIProfile(difficultyKey, archetypeKey, weaponKey = 'cannon') {
   const base = AI_PROFILES[difficultyKey];
   const arch = AI_ARCHETYPES[archetypeKey] ?? AI_ARCHETYPES.balanced;
   const m = arch.mod;
+  const w = PRIMARY[weaponKey]?.ai ?? PRIMARY.cannon.ai;
+  const scaleDifficulty = base.fireRange / AI_PROFILES.normal.fireRange; // harder tiers shoot from a bit further
   return {
     ...base,
     aggression: clamp(base.aggression + (m.aggression ?? 0), 0.05, 0.98),
     retreatHealth: clamp(base.retreatHealth + (m.retreatHealth ?? 0), 0.05, 0.6),
-    preferredRange: base.preferredRange * (1 + (m.preferredRangeMul ?? 0)),
-    passRange: base.passRange * (1 + (m.passRangeMul ?? 0)),
+    preferredRange: base.preferredRange * (1 + (m.preferredRangeMul ?? 0)) * w.rangeMul,
+    passRange: base.passRange * (1 + (m.passRangeMul ?? 0)) * Math.min(1, Math.max(0.6, w.rangeMul)),
+    fireRange: w.fireRange ? w.fireRange * Math.min(1.15, scaleDifficulty) : base.fireRange,
+    fireCone: base.fireCone * w.cone,
+    burstLen: [base.burstLen[0] * w.burst, base.burstLen[1] * w.burst],
+    projSpeed: w.speed,
   };
 }
+
 
 const WEAPON_KINDS = new Set(['missile', 'mine', 'scatter', 'laser']);
 const N_DIRS = 16;
@@ -367,7 +378,7 @@ export class AIController {
     }
 
     // --- Desired direction ---
-    const projSpeed = v.cfg.weaponProjectileSpeed;
+    const projSpeed = p.projSpeed ?? v.cfg.weaponProjectileSpeed;
     if (!targetAlive) {
       // Target is down: cruise a lazy circle around the arena center.
       const ang = this.time * 0.15 + this.phase[0];
