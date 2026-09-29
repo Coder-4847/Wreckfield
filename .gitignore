@@ -1,0 +1,7 @@
+node_modules
+dist
+.DS_Store
+*.log
+# local tooling / private working notes
+.claude/
+memory.md
